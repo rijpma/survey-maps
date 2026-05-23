@@ -9,8 +9,6 @@
 # ///
 
 import argparse
-import os
-import random
 import shutil
 from pathlib import Path
 
@@ -19,31 +17,55 @@ import numpy as np
 from PIL import Image
 
 
-def setup_labeling_session(src_dir, dest_root, sample_size=20):
-    # 1. Setup Folders
-    img_dest = Path(dest_root) / "images"
-    mask_dest = Path(dest_root) / "masks"
+def setup_labeling_session(src_dir, dest_root, limit=None):
+    src_dir = Path(src_dir)
+    dest_root = Path(dest_root)
+
+    # 1. Setup folders
+    img_dest = dest_root / "images"
+    mask_dest = dest_root / "masks"
+    complete_dest = dest_root / "complete"
     img_dest.mkdir(parents=True, exist_ok=True)
     mask_dest.mkdir(parents=True, exist_ok=True)
+    complete_dest.mkdir(parents=True, exist_ok=True)
 
-    # 2. Sample random tiles recursively
+    # 2. Find all tiles recursively and skip ones already labeled
     src_path = Path(src_dir)
-    all_tiles = list(src_path.rglob("*.png"))
-    sampled_tiles = random.sample(all_tiles, min(sample_size, len(all_tiles)))
+    all_tiles = sorted(src_path.rglob("*.png"))
+    pending_tiles = []
 
-    print(f"Sampled {len(sampled_tiles)} tiles into {img_dest}")
+    for tile_path in all_tiles:
+        tile_name = tile_path.name
+        mask_path = mask_dest / tile_name
+        complete_path = complete_dest / f"{tile_name}.done"
+        if mask_path.exists() or complete_path.exists():
+            continue
+        pending_tiles.append(tile_path)
 
-    # Copy files and load into memory for Napari
+    if limit is not None:
+        pending_tiles = pending_tiles[:limit]
+
+    if not pending_tiles:
+        print("No unlabeled tiles remaining.")
+        return
+
+    print(f"Found {len(all_tiles)} total tiles")
+    print(f"Labeling {len(pending_tiles)} unlabeled tiles")
+
+    # Copy pending files and load into memory for Napari
     image_list = []
     grayscale_list = []
-    for tile_path in sampled_tiles:
+    for tile_path in pending_tiles:
         tile_name = tile_path.name
-        shutil.copy(tile_path, img_dest / tile_name)
+        copied_tile_path = img_dest / tile_name
+        if not copied_tile_path.exists():
+            shutil.copy(tile_path, copied_tile_path)
+
         # Load color image (force RGB)
-        color_image = np.array(Image.open(img_dest / tile_name).convert("RGB"))
+        color_image = np.array(Image.open(copied_tile_path).convert("RGB"))
         image_list.append(color_image)
         # Convert to grayscale for labels (one layer, no color blabla)
-        grayscale_image = np.array(Image.open(img_dest / tile_name).convert("L"))
+        grayscale_image = np.array(Image.open(copied_tile_path).convert("L"))
         grayscale_list.append(grayscale_image)
 
     # Stack images into 3D arrays
@@ -68,7 +90,7 @@ def setup_labeling_session(src_dir, dest_root, sample_size=20):
 
     print("\n--- INSTRUCTIONS ---")
     print("1. Use the 'Paintbrush' tool to draw over roads.")
-    print("2. Scroll through the 20 images using the slider at the bottom.")
+    print("2. Scroll through the images using the slider at the bottom.")
     print("3. Use 'Eraser' to fix mistakes.")
     print(
         "4. IMPORTANT: Close the Napari window when you are finished to save your work."
@@ -76,29 +98,56 @@ def setup_labeling_session(src_dir, dest_root, sample_size=20):
 
     napari.run()
 
-    # 4. Save individual masks after Napari closes
-    print("Saving masks...")
+    # 4. Save results after Napari closes
+    print("Saving results...")
     final_masks = label_layer.data  # This is the (N, H, W) array you painted
 
-    for i, tile_path in enumerate(sampled_tiles):
+    saved_count = 0
+    completed_empty_count = 0
+    for i, tile_path in enumerate(pending_tiles):
         tile_name = tile_path.name
-        mask_path = mask_dest / tile_name
-        # Save as 0 and 1 (standard for Transformers/PyTorch)
-        Image.fromarray(final_masks[i].astype(np.uint8)).save(mask_path)
+        mask_array = final_masks[i].astype(np.uint8)
+        complete_path = complete_dest / f"{tile_name}.done"
 
-    print(f"Successfully saved {len(sampled_tiles)} masks to {mask_dest}")
+        if np.any(mask_array):
+            mask_path = mask_dest / tile_name
+            # Save as 0 and 1 (standard for Transformers/PyTorch)
+            Image.fromarray(mask_array).save(mask_path)
+            saved_count += 1
+        else:
+            complete_path.touch()
+            completed_empty_count += 1
+
+    print(f"Saved {saved_count} masks to {mask_dest}")
+    print(f"Marked {completed_empty_count} empty tiles as complete in {complete_dest}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Start a Napari labeling session.")
-    parser.add_argument("--src_dir", type=str, default="./img/india_tiles/14/", help="Directory containing source tiles.")
-    parser.add_argument("--dest_root", type=str, default="./labelled/roads14", help="Root directory for saving images and masks.")
-    parser.add_argument("--sample_size", type=int, default=100, help="Number of random tiles to sample.")
+    base_dir = Path(__file__).resolve().parent
+    parser.add_argument(
+        "--src_dir",
+        type=Path,
+        default=base_dir / "india_tiles" / "14",
+        help="Directory containing source tiles.",
+    )
+    parser.add_argument(
+        "--dest_root",
+        type=Path,
+        default=base_dir / "labelled" / "roads14",
+        help="Root directory for saving images and masks.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Only open the first N unlabeled tiles.",
+    )
 
     args = parser.parse_args()
 
     setup_labeling_session(
         src_dir=args.src_dir,
         dest_root=args.dest_root,
-        sample_size=args.sample_size
+        limit=args.limit,
     )
