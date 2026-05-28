@@ -6,11 +6,16 @@ dist/
 wheels/
 *.egg-info
 
+# mac stuff
+.DS_Store
 
 # Virtual environments
 .venv
 
-# data folders
+# data and results folders
 img
 india_tiles*
 notes
+old
+segformer*results
+*empty_masks*
