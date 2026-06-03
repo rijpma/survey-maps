@@ -13,6 +13,7 @@ wheels/
 .venv
 
 # data and results folders
+pres
 img
 india_tiles*
 notes
