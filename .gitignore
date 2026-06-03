@@ -9,6 +9,9 @@ wheels/
 # mac stuff
 .DS_Store
 
+# R stuff
+.Rapp.history
+
 # Virtual environments
 .venv
 
@@ -18,5 +21,6 @@ img
 india_tiles*
 notes
 old
-segformer*results
+*results*
 *empty_masks*
+*checkpoint*
