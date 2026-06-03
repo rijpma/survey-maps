@@ -3,7 +3,7 @@
 # dependencies = [
 #     "napari[all]",    # Includes the GUI backend (PyQt5)
 #     "scikit-image",   # For loading image collections
-#     "pillow",            # For reading/writing PNGs
+#     "pillow",         # For reading/writing PNGs
 #     "numpy",
 # ]
 # ///
@@ -134,7 +134,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dest_root",
         type=Path,
-        default=base_dir / "labelled" / "roads14",
+        default=base_dir / "napari_out" / "roads14",
         help="Root directory for saving images and masks.",
     )
     parser.add_argument(
