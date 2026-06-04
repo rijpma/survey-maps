@@ -11,7 +11,7 @@ The following scripts are in the `src` folders:
 1. `nls.py`: Pulls individual 256x256 tiles from the web into a structured grid format.
 2. `stitch.py`: Combines those individual tiles into a single, cohesive, high-resolution map for viewing.
 3. `label.py`: Samples a subset of the downloaded tiles to create pairs of images and binary masks for training computer vision models. Launches Napari.
-4. `segformer_colab_t4.ipynb`: Notebook to finetune a segformer model. [Launch it here on Google Colab](https://githubtocolab.com/rijpma/survey-maps/blob/main/src//segformer_colab_t4.ipynb). Make sure to put the runtime to T4.
+4. `segformer_colab_t4.ipynb`: Notebook to finetune a segformer model. [Launch it here on Google Colab](https://githubtocolab.com/rijpma/survey-maps/blob/main/src/segformer_colab_t4.ipynb). Make sure to put the runtime to T4.
 5. `inference.py` run inference using the finetuned models.
 
 ### Step 1: Downloading Tiles (`nls.py`)
