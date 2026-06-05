@@ -17,7 +17,8 @@ wheels/
 
 # data and results folders
 pres
-img
+img/*
+!img/hard/
 india_tiles*
 notes
 old
