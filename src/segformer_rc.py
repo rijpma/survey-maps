@@ -51,6 +51,15 @@ parser.add_argument("--grid-line-probability", type=float, default=0.08)
 parser.add_argument("--blur-probability", type=float, default=0.06)
 parser.add_argument("--noise-probability", type=float, default=0.06)
 parser.add_argument("--resume-from-checkpoint", type=str)
+parser.add_argument(
+    "--loss",
+    type=str,
+    default="ce",
+    choices=("ce", "weighted-ce", "dice", "ce-dice", "weighted-ce-dice"),
+)
+parser.add_argument("--class-weight-object", type=float, default=3.0)
+parser.add_argument("--dice-smooth", type=float, default=1.0)
+parser.add_argument("--dice-weight", type=float, default=1.0)
 args = parser.parse_args()
 
 print("Torch version:", torch.__version__)
@@ -116,6 +125,10 @@ TEXT_PROBABILITY = args.text_probability
 GRID_LINE_PROBABILITY = args.grid_line_probability
 BLUR_PROBABILITY = args.blur_probability
 NOISE_PROBABILITY = args.noise_probability
+LOSS_NAME = args.loss
+CLASS_WEIGHT_OBJECT = args.class_weight_object
+DICE_SMOOTH = args.dice_smooth
+DICE_WEIGHT = args.dice_weight
 TEXT_MIN_FONT_SIZE = 24
 TEXT_MAX_FONT_SIZE = 36
 TEXT_MAX_TEXTS = 1
@@ -142,6 +155,10 @@ print("Text probability:", TEXT_PROBABILITY)
 print("Grid-line probability:", GRID_LINE_PROBABILITY)
 print("Blur probability:", BLUR_PROBABILITY)
 print("Noise probability:", NOISE_PROBABILITY)
+print("Loss:", LOSS_NAME)
+print("Class weight object:", CLASS_WEIGHT_OBJECT)
+print("Dice smooth:", DICE_SMOOTH)
+print("Dice weight:", DICE_WEIGHT)
 print("Train on CPU:", TRAIN_ON_CPU)
 print("Smoke test only:", SMOKE_TEST_ONLY)
 print("Resume from checkpoint:", RESUME_FROM_CHECKPOINT)
@@ -667,6 +684,75 @@ class ValidationLogger(TrainerCallback):
                     f.write(line + "\n")
 
 
+class WeightedLossTrainer(Trainer):
+    def __init__(
+        self,
+        *args,
+        loss_name="ce",
+        class_weight_object=3.0,
+        dice_smooth=1.0,
+        dice_weight=1.0,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.loss_name = loss_name
+        self.class_weight_object = class_weight_object
+        self.dice_smooth = dice_smooth
+        self.dice_weight = dice_weight
+
+    def _dice_loss(self, logits, labels):
+        probs = torch.softmax(logits, dim=1)[:, 1, :, :]
+        labels = labels.float()
+        intersection = (probs * labels).sum(dim=(1, 2))
+        denominator = probs.sum(dim=(1, 2)) + labels.sum(dim=(1, 2))
+        dice_score = (2 * intersection + self.dice_smooth) / (
+            denominator + self.dice_smooth
+        )
+        return 1.0 - dice_score.mean()
+
+    def compute_loss(
+        self, model, inputs, return_outputs=False, num_items_in_batch=None
+    ):
+        labels = inputs["labels"]
+        model_inputs = {k: v for k, v in inputs.items() if k != "labels"}
+        outputs = model(**model_inputs)
+        logits = outputs.logits
+
+        upsampled_logits = F.interpolate(
+            logits,
+            size=labels.shape[-2:],
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        labels = labels.long()
+        loss = None
+
+        if self.loss_name in {"ce", "weighted-ce", "ce-dice", "weighted-ce-dice"}:
+            ce_weight = None
+            if self.loss_name in {"weighted-ce", "weighted-ce-dice"}:
+                ce_weight = torch.tensor(
+                    [1.0, self.class_weight_object],
+                    device=upsampled_logits.device,
+                    dtype=upsampled_logits.dtype,
+                )
+            ce_loss = F.cross_entropy(upsampled_logits, labels, weight=ce_weight)
+            loss = ce_loss
+
+        if self.loss_name in {"dice", "ce-dice", "weighted-ce-dice"}:
+            dice_loss = self._dice_loss(upsampled_logits, labels)
+            loss = (
+                self.dice_weight * dice_loss
+                if loss is None
+                else loss + self.dice_weight * dice_loss
+            )
+
+        if loss is None:
+            raise ValueError(f"Unsupported loss: {self.loss_name}")
+
+        return (loss, outputs) if return_outputs else loss
+
+
 training_args = TrainingArguments(
     output_dir=str(OUTPUT_DIR),
     learning_rate=LEARNING_RATE,
@@ -693,13 +779,17 @@ training_args = TrainingArguments(
     seed=SEED,
 )
 
-trainer = Trainer(
+trainer = WeightedLossTrainer(
     model=model,
     args=training_args,
     train_dataset=transformed_datasets["train"],
     eval_dataset=transformed_datasets["test"],
     compute_metrics=compute_metrics,
     callbacks=[ValidationLogger()],
+    loss_name=LOSS_NAME,
+    class_weight_object=CLASS_WEIGHT_OBJECT,
+    dice_smooth=DICE_SMOOTH,
+    dice_weight=DICE_WEIGHT,
 )
 
 print(training_args)
