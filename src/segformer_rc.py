@@ -5,49 +5,15 @@
 #   "accelerate>=1.12.0",
 #   "datasets>=4.4.2",
 #   "evaluate>=0.4.6",
-#   "matplotlib>=3.10.8",
 #   "numpy>=2.0.0",
 #   "pillow>=12.0.0",
-#   "requests>=2.32.0",
 #   "scikit-learn>=1.7.2",
 #   "torch>=2.9.1",
 #   "torchvision>=0.24.1",
-#   "tqdm>=4.67.1",
 #   "transformers>=4.57.3",
 # ]
 # ///
 
-# ---
-# jupyter:
-#   jupytext:
-#     text_representation:
-#       extension: .py
-#       format_name: percent
-#       format_version: '1.3'
-#       jupytext_version: 1.19.3
-#   kernelspec:
-#     display_name: Python 3
-#     language: python
-#     name: python3
-# ---
-
-# %% [markdown]
-# # SegFormer fine-tuning on Google Colab (T4)
-#
-# This  will:
-# - install all required libraries
-# - download 500 images and masks from GitHub
-# - create an **empty mask** for every image without a labeled mask. Only a subset of images have masks. images without a mask are treated as **negative examples** with an all-zero mask
-# - fine-tune **SegFormer MIT-B1** by default (switch later to **MIT-B2**)
-# - evaluate the model and export sample predictions
-#
-
-# %%
-# @title 1. Install dependencies
-# !pip -q install -U transformers datasets evaluate accelerate huggingface_hub "pillow<12.0" matplotlib scikit-learn
-
-# %%
-# @title 2. Imports and environment checks
 import argparse
 import json
 import random
@@ -56,7 +22,6 @@ from pathlib import Path
 
 import evaluate
 import numpy as np
-import requests
 import torch
 import torch.nn.functional as F
 from datasets import Dataset, DatasetDict
@@ -70,15 +35,21 @@ from transformers import (
     TrainingArguments,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-LABELLED_ROOT = REPO_ROOT / "labelled"
-BATCH1_ROOT = LABELLED_ROOT / "batch1"
-HARD_DIR = REPO_ROOT / "img" / "hard"
-
 parser = argparse.ArgumentParser()
 parser.add_argument("--train-on-cpu", action="store_true")  # = default false
 parser.add_argument("--smoke-test", action="store_true")
-parser.add_argument("--skip_augmentations", action="store_true")
+parser.add_argument(
+    "--skip-augmentations", dest="skip_augmentations", action="store_true"
+)
+parser.add_argument("--model", type=str, default="nvidia/mit-b1")
+parser.add_argument("--num-epochs", type=int, default=20)
+parser.add_argument("--bw-probability", type=float, default=0.08)
+parser.add_argument("--color-probability", type=float, default=0.15)
+parser.add_argument("--text-probability", type=float, default=0.08)
+parser.add_argument("--grid-line-probability", type=float, default=0.08)
+parser.add_argument("--blur-probability", type=float, default=0.06)
+parser.add_argument("--noise-probability", type=float, default=0.06)
+parser.add_argument("--resume-from-checkpoint", type=str)
 args = parser.parse_args()
 
 print("Torch version:", torch.__version__)
@@ -87,20 +58,18 @@ print("MPS available:", torch.backends.mps.is_available())
 if torch.cuda.is_available():
     print("GPU:", torch.cuda.get_device_name(0))
 elif torch.backends.mps.is_available():
-    print(
-        "MPS detected, but this script keeps training on CPU to avoid MPS SegFormer issues."
-    )
-else:
-    print("No GPU detected. In Colab, go to Runtime -> Change runtime type -> T4 GPU.")
+    print("MPS detected, but training keps on CPU to avoid MPS SegFormer issues.")
 
 
-# %%
-# @title 3. Configuration
-CHECKPOINT = "nvidia/mit-b1"  # change to 'nvidia/mit-b2' later if wanted
-OUTPUT_DIR = REPO_ROOT / "results" / "segformer-dry-run-results"
-DATA_ROOT = BATCH1_ROOT
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CHECKPOINT = args.model
+
+HARD_DIR = REPO_ROOT / "img" / "hard"
+DATA_ROOT = REPO_ROOT / "labelled" / "batch1"
 IMAGES_DIR = DATA_ROOT / "images"
 MASKS_DIR = DATA_ROOT / "masks"
+
+OUTPUT_DIR = REPO_ROOT / "results" / "segformer-dry-run-results"
 GENERATED_MASKS_DIR = OUTPUT_DIR / "generated_masks"
 PREVIEW_DIR = OUTPUT_DIR / "previews"
 PREDICTION_DIR = OUTPUT_DIR / "prediction_samples"
@@ -108,24 +77,30 @@ LOG_PATH = OUTPUT_DIR / "training.log"
 EVAL_LOG_PATH = OUTPUT_DIR / "eval_results.jsonl"
 FINAL_MODEL_PATH = OUTPUT_DIR / "final_best_model"
 
-IMAGE_BASE_URL = (
-    "https://raw.githubusercontent.com/rijpma/survey-maps/main/labelled/batch1/images"
-)
-MASK_BASE_URL = (
-    "https://raw.githubusercontent.com/rijpma/survey-maps/main/labelled/batch1/masks"
-)
-GITHUB_API_IMAGES = (
-    "https://api.github.com/repos/rijpma/survey-maps/contents/labelled/batch1/images"
-)
-GITHUB_API_MASKS = (
-    "https://api.github.com/repos/rijpma/survey-maps/contents/labelled/batch1/masks"
-)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+GENERATED_MASKS_DIR.mkdir(parents=True, exist_ok=True)
+PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+PREDICTION_DIR.mkdir(parents=True, exist_ok=True)
+
+PREVIEW_IMAGE_NAMES = [
+    "7401_lat_17.11979_lon_76.02539.png",
+    "7028_lat_24.76678_lon_95.29541.png",
+]
+
+POSITIVE_IMAGE_NAMES = [
+    "6908_lat_27.13737_lon_80.41992.png",
+    "6968_lat_25.95804_lon_79.40918.png",
+    "6815_lat_28.94086_lon_78.99170.png",
+    "6962_lat_26.07652_lon_81.18896.png",
+    "6962_lat_26.07652_lon_81.18896.png",
+]
+
 
 IMAGE_SIZE = 512  #  switch to 384 for b2?
 TEST_SIZE = 0.2
 SEED = 42
 
-NUM_EPOCHS = 20
+NUM_EPOCHS = args.num_epochs
 TRAIN_BATCH_SIZE = 8  # switch to 4 for b2?
 EVAL_BATCH_SIZE = 8
 LEARNING_RATE = 6e-5
@@ -134,30 +109,25 @@ GRADIENT_ACCUMULATION_STEPS = 1
 
 SKIP_AUGMENTATIONS = args.skip_augmentations
 SKIP_ALL_AUGMENTATIONS = False  # redundant but keep for compatibility
-BW_PROBABILITY = 0.08
-COLOR_PROBABILITY = 0.15
-TEXT_PROBABILITY = 0.08
-GRID_LINE_PROBABILITY = 0.08
-BLUR_PROBABILITY = 0.06
-NOISE_PROBABILITY = 0.06
+BW_PROBABILITY = args.bw_probability
+COLOR_PROBABILITY = args.color_probability
+TEXT_PROBABILITY = args.text_probability
+GRID_LINE_PROBABILITY = args.grid_line_probability
+BLUR_PROBABILITY = args.blur_probability
+NOISE_PROBABILITY = args.noise_probability
 TEXT_MIN_FONT_SIZE = 24
 TEXT_MAX_FONT_SIZE = 36
 TEXT_MAX_TEXTS = 1
 TEXT_MIN_LENGTH = 3
 TEXT_MAX_LENGTH = 12
-PREVIEW_SAMPLE_COUNT = 4
-FINAL_SAMPLE_COUNT = 12
+
 
 id2label = {0: "background", 1: "object"}
 label2id = {v: k for k, v in id2label.items()}
 
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-GENERATED_MASKS_DIR.mkdir(parents=True, exist_ok=True)
-PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
-PREDICTION_DIR.mkdir(parents=True, exist_ok=True)
-
 TRAIN_ON_CPU = args.train_on_cpu
 SMOKE_TEST_ONLY = args.smoke_test
+RESUME_FROM_CHECKPOINT = args.resume_from_checkpoint
 
 print("Checkpoint:", CHECKPOINT)
 print("Output dir:", str(OUTPUT_DIR))
@@ -173,62 +143,26 @@ print("Blur probability:", BLUR_PROBABILITY)
 print("Noise probability:", NOISE_PROBABILITY)
 print("Train on CPU:", TRAIN_ON_CPU)
 print("Smoke test only:", SMOKE_TEST_ONLY)
+print("Resume from checkpoint:", RESUME_FROM_CHECKPOINT)
 
 
-# %%
-# @title 4. Download images and masks from GitHub
-from tqdm.auto import tqdm
+if not IMAGES_DIR.exists() or not MASKS_DIR.exists():
+    raise FileNotFoundError(f"Expected local dataset under {DATA_ROOT}")
 
-
-def list_github_files(api_url):
-    response = requests.get(api_url, timeout=60)
-    response.raise_for_status()
-    items = response.json()
-    return [
-        item["name"]
-        for item in items
-        if item["type"] == "file" and item["name"].lower().endswith(".png")
-    ]
-
-
-def download_files(file_names, base_url, destination_dir):
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    for name in tqdm(file_names, desc=f"Downloading to {destination_dir.name}"):
-        out_path = destination_dir / name
-        if out_path.exists():
-            continue
-        url = f"{base_url}/{name}"
-        response = requests.get(url, timeout=60)
-        response.raise_for_status()
-        out_path.write_bytes(response.content)
-
-
-if IMAGES_DIR.exists() and MASKS_DIR.exists() and list(IMAGES_DIR.glob("*.png")):
-    print("Using existing local data in:", DATA_ROOT)
-else:
-    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-    MASKS_DIR.mkdir(parents=True, exist_ok=True)
-    image_names = sorted(list_github_files(GITHUB_API_IMAGES))
-    mask_names = sorted(list_github_files(GITHUB_API_MASKS))
-
-    print(f"Images on GitHub: {len(image_names)}")
-    print(f"Masks on GitHub: {len(mask_names)}")
-
-    download_files(image_names, IMAGE_BASE_URL, IMAGES_DIR)
-    download_files(mask_names, MASK_BASE_URL, MASKS_DIR)
-
+print("Using local data in:", DATA_ROOT)
 print("Available images:", len(list(IMAGES_DIR.glob("*.png"))))
 print("Available masks:", len(list(MASKS_DIR.glob("*.png"))))
 
 
-# %%
-# @title 5. Build dataset records and generate empty masks where missing
+def normalize_mask_array(mask):
+    mask_np = np.asarray(mask)
+    if mask_np.ndim == 3:
+        mask_np = mask_np[..., 0]
+    return (mask_np > 0).astype(np.uint8)
+
+
 def normalize_mask(mask_img):
-    mask_arr = np.array(mask_img)
-    if mask_arr.ndim == 3:
-        mask_arr = mask_arr[..., 0]
-    mask_arr = (mask_arr > 0).astype(np.uint8)
-    return Image.fromarray(mask_arr, mode="L")
+    return Image.fromarray(normalize_mask_array(mask_img), mode="L")
 
 
 def make_empty_mask_like(image_path):
@@ -241,6 +175,7 @@ records = []
 positive_count = 0
 negative_count = 0
 
+# make empty mask when no mask file exist
 for image_path in sorted(IMAGES_DIR.glob("*.png")):
     mask_path = MASKS_DIR / image_path.name
 
@@ -272,8 +207,6 @@ print("Negative images without masks:", negative_count)
 assert len(records) > 0
 
 
-# %%
-# @title 6. Stratified train/test split
 indices = list(range(len(records)))
 stratify_labels = [r["has_object_mask"] for r in records]
 
@@ -293,59 +226,102 @@ print("Train positives:", sum(r["has_object_mask"] for r in train_records))
 print("Test positives:", sum(r["has_object_mask"] for r in test_records))
 
 
-# %%
-# @title 7. Create Hugging Face datasets
 train_ds = Dataset.from_list(train_records)
 test_ds = Dataset.from_list(test_records)
 raw_datasets = DatasetDict({"train": train_ds, "test": test_ds})
-raw_datasets
 
 
-# %%
-# @title 8. Visual sanity check
-def choose_balanced_examples(examples, total_count):
-    positives = [example for example in examples if example["has_object_mask"] == 1]
-    negatives = [example for example in examples if example["has_object_mask"] == 0]
-    random.shuffle(positives)
-    random.shuffle(negatives)
-    half = total_count // 2
-    chosen = positives[:half] + negatives[:half]
-    remaining = total_count - len(chosen)
-    leftovers = positives[half:] + negatives[half:]
-    chosen.extend(leftovers[:remaining])
-    return chosen
+def make_overlay(image, mask, *, alpha=1.0):
+    image_np = np.array(image).astype(np.float32)
+    overlay = image_np.copy()
+    red = np.array([255, 0, 0], dtype=np.float32)
+    mask_bool = normalize_mask_array(mask) > 0
+    overlay[mask_bool] = (1 - alpha) * image_np[mask_bool] + alpha * red
+    return Image.fromarray(overlay.astype(np.uint8))
 
 
-def save_example_triplet(example, destination_dir, prefix):
-    image = Image.open(example["image_path"]).convert("RGB")
-    mask = Image.open(example["mask_path"])
-    mask_np = np.array(mask)
-    if mask_np.ndim == 3:
-        mask_np = mask_np[..., 0]
-    mask_np = (mask_np > 0).astype(np.uint8)
-
-    image.save(destination_dir / f"{prefix}_image.png")
-    Image.fromarray(mask_np * 255).save(destination_dir / f"{prefix}_mask.png")
-
-    overlay = np.array(image).copy()
-    overlay_mask = mask_np > 0
-    overlay[overlay_mask] = [255, 0, 0]
-    Image.fromarray(overlay).save(destination_dir / f"{prefix}_overlay.png")
+def write_image_and_masks(destination_dir, image, masks_by_suffix, output_file_name):
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    image.save(destination_dir / f"{output_file_name}_image.png")
+    for suffix, mask in masks_by_suffix.items():
+        mask_np = normalize_mask_array(mask)
+        Image.fromarray(mask_np * 255).save(
+            destination_dir / f"{output_file_name}_{suffix}.png"
+        )
 
 
-def show_samples(dataset, n=4):
-    selected = choose_balanced_examples(list(dataset), n)
-    for row, example in enumerate(selected):
-        prefix = f"{row:02d}_{'has-mask' if example['has_object_mask'] else 'empty-mask'}_{Path(example['file_name']).stem}"
-        save_example_triplet(example, PREVIEW_DIR, prefix)
+def write_triplet(destination_dir, image, mask, output_file_name):
+    write_image_and_masks(
+        destination_dir,
+        image,
+        {"mask": mask},
+        output_file_name,
+    )
+    make_overlay(image, mask, alpha=1.0).save(
+        destination_dir / f"{output_file_name}_overlay.png"
+    )
 
 
-show_samples(raw_datasets["train"], n=PREVIEW_SAMPLE_COUNT)
-print("Saved preview samples to:", PREVIEW_DIR)
+def get_examples_by_name(records, file_names):
+    records_by_name = {record["file_name"]: record for record in records}
+    selected = []
+    for file_name in file_names:
+        example = records_by_name.get(file_name)
+        if example is None:
+            raise FileNotFoundError(f"Image {file_name} not found in dataset records")
+        selected.append(example)
+    return selected
 
 
-# %%
-# @title 9. Processor and transforms
+def write_transform_previews(records):
+    selected = get_examples_by_name(records, PREVIEW_IMAGE_NAMES)
+
+    augmentation_showcases = [
+        (
+            "original",
+            lambda image, mask: image,
+        ),
+        (
+            "bw",
+            lambda image, mask: convert_to_bw_rgb(image, probability=1.0),
+        ),
+        (
+            "color-balance",
+            lambda image, mask: adjust_color_balance(image, probability=1.0),
+        ),
+        (
+            "text-overlay",
+            lambda image, mask: overlay_short_text(image, probability=1.0, mask=mask),
+        ),
+        (
+            "grid-line",
+            lambda image, mask: add_single_grid_line(image, probability=1.0),
+        ),
+        (
+            "gaussian-blur",
+            lambda image, mask: apply_gaussian_blur(image, probability=1.0),
+        ),
+        (
+            "speckle-noise",
+            lambda image, mask: add_speckle_noise(image, probability=1.0),
+        ),
+    ]
+
+    for example in selected:
+        image, mask_arr = load_image_and_mask(example)
+        label = "positive" if example["has_object_mask"] else "negative"
+        stem = Path(example["file_name"]).stem
+
+        for augmentation_name, augmentation_fn in augmentation_showcases:
+            augmented_image = augmentation_fn(image.copy(), mask_arr)
+            write_triplet(
+                PREVIEW_DIR,
+                augmented_image,
+                mask_arr,
+                f"{label}_{stem}_{augmentation_name}",
+            )
+
+
 processor = SegformerImageProcessor.from_pretrained(
     CHECKPOINT,
     do_resize=True,
@@ -356,11 +332,7 @@ processor = SegformerImageProcessor.from_pretrained(
 
 def load_image_and_mask(example):
     image = Image.open(example["image_path"]).convert("RGB")
-    mask = Image.open(example["mask_path"])
-    mask_arr = np.array(mask)
-    if mask_arr.ndim == 3:
-        mask_arr = mask_arr[..., 0]
-    mask_arr = (mask_arr > 0).astype(np.uint8)
+    mask_arr = normalize_mask_array(Image.open(example["mask_path"]))
     return image, mask_arr
 
 
@@ -415,21 +387,6 @@ def _random_place_name_string(min_length=3, max_length=12):
     return "".join(random.choice(alphabet) for _ in range(chosen_length)).title()
 
 
-def _load_text_font(font_size):
-    font_candidates = [
-        "DejaVuSans-Bold.ttf",
-        "DejaVuSans.ttf",
-    ]
-
-    for font_path in font_candidates:
-        try:
-            return ImageFont.truetype(font_path, font_size)
-        except OSError:
-            continue
-
-    return ImageFont.load_default()
-
-
 def overlay_short_text(
     image,
     probability=0.15,
@@ -466,7 +423,7 @@ def overlay_short_text(
         rgb = random.choice(text_color_choices)
         ink = (*rgb, alpha)
 
-        font = _load_text_font(font_size)
+        font = ImageFont.load_default()
 
         dummy = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
         dummy_draw = ImageDraw.Draw(dummy)
@@ -599,18 +556,19 @@ def apply_map_augmentations(
     return out
 
 
+write_transform_previews(records)
+print("Saved transform previews to:", PREVIEW_DIR)
+
+
 def train_transforms(example_batch):
     images = []
     labels = []
     for image_path, mask_path in zip(
         example_batch["image_path"], example_batch["mask_path"]
     ):
-        image = Image.open(image_path).convert("RGB")
-        mask = Image.open(mask_path)
-        mask_arr = np.array(mask)
-        if mask_arr.ndim == 3:
-            mask_arr = mask_arr[..., 0]
-        mask_arr = (mask_arr > 0).astype(np.uint8)
+        image, mask_arr = load_image_and_mask(
+            {"image_path": image_path, "mask_path": mask_path}
+        )
 
         if not SKIP_AUGMENTATIONS:
             image = apply_map_augmentations(
@@ -640,8 +598,6 @@ def train_transforms(example_batch):
 transformed_datasets = raw_datasets.with_transform(train_transforms)
 
 
-# %%
-# @title 10. Load model
 model = SegformerForSemanticSegmentation.from_pretrained(
     CHECKPOINT,
     num_labels=2,
@@ -656,8 +612,6 @@ print(f"Trainable params: {trainable_params:,}")
 print(f"Total params: {total_params:,}")
 
 
-# %%
-# @title 11. Metrics and trainer helpers
 metric = evaluate.load("mean_iou")
 
 
@@ -683,6 +637,7 @@ def compute_metrics(eval_pred):
         or {}
     )
 
+    # to get to run metrics.get("per_category_iou",  [0.0, 0.0])s
     per_category_iou = metrics.get("per_category_iou") or [0.0, 0.0]
     return {
         "mean_iou": metrics.get("mean_iou", 0.0),
@@ -709,8 +664,6 @@ class ValidationLogger(TrainerCallback):
                     f.write(line + "\n")
 
 
-# %%
-# @title 12. Training arguments for Colab T4
 training_args = TrainingArguments(
     output_dir=str(OUTPUT_DIR),
     learning_rate=LEARNING_RATE,
@@ -749,8 +702,6 @@ trainer = Trainer(
 print(training_args)
 
 
-# %%
-# @title 13. Start training
 print("Starting training on device:", trainer.args.device)
 if SMOKE_TEST_ONLY:
     train_result = None
@@ -761,18 +712,15 @@ if SMOKE_TEST_ONLY:
             json.dumps({"train_result": train_result_payload}, sort_keys=True) + "\n"
         )
 else:
-    train_result = trainer.train()
+    train_result = trainer.train(resume_from_checkpoint=RESUME_FROM_CHECKPOINT)
     train_result_payload = train_result.metrics
     print(json.dumps({"train_result": train_result_payload}, sort_keys=True))
     with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(
             json.dumps({"train_result": train_result_payload}, sort_keys=True) + "\n"
         )
-train_result
 
 
-# %%
-# @title 14. Final evaluation
 if SMOKE_TEST_ONLY:
     eval_metrics = {"skipped_eval": True}
 else:
@@ -780,11 +728,8 @@ else:
 print(json.dumps({"final_eval": eval_metrics}, sort_keys=True))
 with open(LOG_PATH, "a", encoding="utf-8") as f:
     f.write(json.dumps({"final_eval": eval_metrics}, sort_keys=True) + "\n")
-eval_metrics
 
 
-# %%
-# @title 15. Save best model
 final_model_path = FINAL_MODEL_PATH
 trainer.save_model(str(final_model_path))
 processor.save_pretrained(str(final_model_path))
@@ -795,16 +740,9 @@ with open(LOG_PATH, "a", encoding="utf-8") as f:
     )
 
 
-# %%
-# @title 16. Export sample predictions
 PREDICTION_DIR.mkdir(parents=True, exist_ok=True)
 
-for old_file in PREDICTION_DIR.glob("*.png"):
-    old_file.unlink()
-for old_file in PREVIEW_DIR.glob("*.png"):
-    old_file.unlink()
-
-inference_device = "cuda" if torch.cuda.is_available() else "cpu"
+inference_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(inference_device)
 model.eval()
 
@@ -825,35 +763,26 @@ def predict_mask(image):
 
 def save_prediction_triplet(example, destination_dir, prefix):
     image = Image.open(example["image_path"]).convert("RGB")
-    gt_mask = np.array(Image.open(example["mask_path"]))
-    if gt_mask.ndim == 3:
-        gt_mask = gt_mask[..., 0]
-    gt_mask = (gt_mask > 0).astype(np.uint8)
+    gt_mask = normalize_mask_array(Image.open(example["mask_path"]))
     pred_mask = predict_mask(image)
 
-    image.save(destination_dir / f"{prefix}_image.png")
-    Image.fromarray(gt_mask * 255).save(destination_dir / f"{prefix}_gt.png")
-    Image.fromarray(pred_mask * 255).save(destination_dir / f"{prefix}_pred.png")
-
-    image_np = np.array(image).astype(np.float32)
-    overlay = image_np.copy()
-    red = np.array([255, 0, 0], dtype=np.float32)
-    alpha = 0.7
-    mask = pred_mask > 0
-    overlay[mask] = (1 - alpha) * image_np[mask] + alpha * red
-    overlay = overlay.astype(np.uint8)
-    Image.fromarray(overlay).save(destination_dir / f"{prefix}_overlay.png")
+    write_image_and_masks(
+        destination_dir,
+        image,
+        {"gt": gt_mask, "pred": pred_mask},
+        prefix,
+    )
+    make_overlay(image, pred_mask, alpha=0.7).save(
+        destination_dir / f"{prefix}_overlay.png"
+    )
 
 
-preview_examples = choose_balanced_examples(test_records, PREVIEW_SAMPLE_COUNT)
-for i, example in enumerate(preview_examples):
-    prefix = f"preview_{i:02d}_{'has-mask' if example['has_object_mask'] else 'empty-mask'}_{Path(example['file_name']).stem}"
-    save_prediction_triplet(example, PREVIEW_DIR, prefix)
-
-final_examples = choose_balanced_examples(test_records, FINAL_SAMPLE_COUNT)
-for i, example in enumerate(final_examples):
-    prefix = f"test_{i:02d}_{'has-mask' if example['has_object_mask'] else 'empty-mask'}_{Path(example['file_name']).stem}"
+positive_examples = get_examples_by_name(records, POSITIVE_IMAGE_NAMES)
+for i, example in enumerate(positive_examples):
+    prefix = f"test_positive_{i:02d}_{Path(example['file_name']).stem}"
     save_prediction_triplet(example, PREDICTION_DIR, prefix)
+
+# negative examples as well? Usually this is fine.
 
 for hard_image_path in sorted(HARD_DIR.rglob("*.png")):
     implicit_label = hard_image_path.parent.name
@@ -869,13 +798,12 @@ for hard_image_path in sorted(HARD_DIR.rglob("*.png")):
     make_empty_mask_like(hard_image_path).save(hard_example["mask_path"])
     save_prediction_triplet(hard_example, PREDICTION_DIR, prefix)
 
-print("Saved preview prediction samples to:", PREVIEW_DIR)
 print("Saved prediction samples to:", PREDICTION_DIR)
 with open(LOG_PATH, "a", encoding="utf-8") as f:
     f.write(
         json.dumps(
             {
-                "preview_dir": str(PREVIEW_DIR),
+                "preview_dir": str(PREDICTION_DIR),
                 "prediction_dir": str(PREDICTION_DIR),
                 "hard_dir": str(HARD_DIR),
             },
@@ -885,14 +813,7 @@ with open(LOG_PATH, "a", encoding="utf-8") as f:
     )
 
 
-# %%
-# @title 17. Preview prediction samples
-print("Preview files written to:", PREVIEW_DIR)
 print("Prediction files written to:", PREDICTION_DIR)
-
-
-# %%
-# @title 18. Zip results and trigger download
 print("Training run complete. Results are available under:", OUTPUT_DIR)
 print("Training log:", LOG_PATH)
 print("Eval log:", EVAL_LOG_PATH)
