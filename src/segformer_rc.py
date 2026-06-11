@@ -42,6 +42,7 @@ parser.add_argument(
     "--skip-augmentations", dest="skip_augmentations", action="store_true"
 )
 parser.add_argument("--model", type=str, default="nvidia/mit-b1")
+parser.add_argument("--output-dir", type=str, default="segformer-dry-run")
 parser.add_argument("--num-epochs", type=int, default=20)
 parser.add_argument("--bw-probability", type=float, default=0.08)
 parser.add_argument("--color-probability", type=float, default=0.15)
@@ -69,7 +70,7 @@ DATA_ROOT = REPO_ROOT / "labelled" / "batch1"
 IMAGES_DIR = DATA_ROOT / "images"
 MASKS_DIR = DATA_ROOT / "masks"
 
-OUTPUT_DIR = REPO_ROOT / "results" / "segformer-dry-run-results"
+OUTPUT_DIR = REPO_ROOT / "results" / args.output_dir
 GENERATED_MASKS_DIR = OUTPUT_DIR / "generated_masks"
 PREVIEW_DIR = OUTPUT_DIR / "previews"
 PREDICTION_DIR = OUTPUT_DIR / "prediction_samples"
@@ -637,13 +638,15 @@ def compute_metrics(eval_pred):
         or {}
     )
 
-    # to get to run metrics.get("per_category_iou",  [0.0, 0.0])s
-    per_category_iou = metrics.get("per_category_iou") or [0.0, 0.0]
+    per_category_iou = metrics.get("per_category_iou")
+    if per_category_iou is None:
+        per_category_iou = [0.0, 0.0]
+
     return {
         "mean_iou": metrics.get("mean_iou", 0.0),
         "mean_accuracy": metrics.get("mean_accuracy", 0.0),
-        "iou_background": per_category_iou[0],
-        "iou_object": per_category_iou[1],
+        "iou_background": float(per_category_iou[0]),
+        "iou_object": float(per_category_iou[1]),
     }
 
 
