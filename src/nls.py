@@ -14,15 +14,21 @@ WEST, SOUTH, EAST, NORTH = 77.32122, 8.103021, 77.563616, 8.211740
 # India bounding box (full)
 WEST, SOUTH, EAST, NORTH = 65.557617, 6.699017, 101.341483, 36.135965
 
+# Digboi
+# WEST, SOUTH, EAST, NORTH = 95.56369, 27.26350, 95.78182, 27.41728
+
+# VM
+WEST, SOUTH, EAST, NORTH = 76.86366, 28.80692, 76.99767, 28.89690
+
 # Sample or everything?
-SAMPLE = 0.01  # 0.01 = 1%; >1 is everything
+SAMPLE = 1  # 0.01 = 1%; >=1 is everything
 
 # zoom levels to download
 # ZOOMS = range(14, 16)
 # 14 is the max detail mentioned in source
 # range ... 16, goes up to 15
 
-OUT_DIR = "india_tiles"
+OUT_DIR = "india_tiles-vm"
 os.makedirs(OUT_DIR, exist_ok=True)
 
 
