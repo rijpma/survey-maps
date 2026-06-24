@@ -24,15 +24,10 @@ from PIL import Image
 from transformers import SegformerForSemanticSegmentation, SegformerImageProcessor
 
 # Choose which fine-tuned model to use, m1 or m2
-MODEL = "m1"
+MODEL_DIR = "./results/segformer-b3-weighted_ce-with_aug-cwo6/final_best_model"
 
-INPUT_ROOT = f"./india_tiles/14"
-OUTPUT_ROOT = f"./india_tiles_inference_{MODEL}/14"
-
-MODEL_DIRS = {
-    "m1": "./results/segformer-m1-results-2026-may-30/final_best_model",
-    "m2": "./results/segformer-m2-results-2026-may-29/final_best_model",
-}
+INPUT_ROOT = f"./india_tiles-vm/14"
+OUTPUT_ROOT = f"./india_tiles_inference-mv-{MODEL}/14"
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 
@@ -40,6 +35,12 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run SegFormer inference recursively on india_tiles/14."
+    )
+    parser.add_argument(
+        "--model-dir",
+        type=Path,
+        default=MODEL_DIR,
+        help=f"Folder with the transformers checkpoints for the model weights (default: {MODEL})",
     )
     parser.add_argument(
         "--input-root",
@@ -72,6 +73,11 @@ def parse_args() -> argparse.Namespace:
         "--save-probability",
         action="store_true",
         help="Also save an 8-bit probability map for the positive class.",
+    )
+    parser.add_argument(
+        "--invert-mask",
+        action="store_true",
+        help="Invert the mask PNG so the background is white and predictions are black.",
     )
     return parser.parse_args()
 
@@ -127,6 +133,7 @@ def save_outputs(
     probability_map: np.ndarray,
     threshold: float,
     save_probability: bool,
+    invert_mask: bool = False,
 ) -> None:
     relative_path = image_path.relative_to(input_root)
     destination_dir = output_root / relative_path.parent
@@ -134,6 +141,8 @@ def save_outputs(
 
     stem = image_path.stem
     binary_mask = (probability_map >= threshold).astype(np.uint8) * 255
+    if invert_mask:
+        binary_mask = 255 - binary_mask
 
     mask_path = destination_dir / f"{stem}_mask.png"
     Image.fromarray(binary_mask, mode="L").save(mask_path)
@@ -148,6 +157,8 @@ def save_outputs(
 
     if save_probability:
         probability_u8 = np.clip(probability_map * 255.0, 0, 255).astype(np.uint8)
+        if invert_mask:
+            probability_u8 = 255 - probability_u8
         probability_path = destination_dir / f"{stem}_prob.png"
         Image.fromarray(probability_u8, mode="L").save(probability_path)
 
@@ -159,7 +170,7 @@ output_root = args.output_root.resolve()
 
 device = choose_device(args.device)
 
-model_dir = MODEL_DIRS[MODEL]
+model_dir = args.model_dir.resolve()
 
 processor = SegformerImageProcessor.from_pretrained(model_dir)
 
@@ -190,6 +201,7 @@ for index, image_path in enumerate(image_paths, start=1):
         probability_map=probability_map,
         threshold=args.threshold,
         save_probability=args.save_probability,
+        invert_mask=args.invert_mask,
     )
 
 inference_elapsed = time.perf_counter() - inference_start
