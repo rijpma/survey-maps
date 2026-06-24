@@ -42,6 +42,7 @@ parser.add_argument(
     "--skip-augmentations", dest="skip_augmentations", action="store_true"
 )
 parser.add_argument("--model", type=str, default="nvidia/mit-b1")
+parser.add_argument("--masks-dir", type=str, default="unmetalled")
 parser.add_argument("--output-dir", type=str, default="segformer-dry-run")
 parser.add_argument("--num-epochs", type=int, default=20)
 parser.add_argument("--bw-probability", type=float, default=0.08)
@@ -77,7 +78,7 @@ CHECKPOINT = args.model
 HARD_DIR = REPO_ROOT / "img" / "hard"
 DATA_ROOT = REPO_ROOT / "labelled" / "batch1"
 IMAGES_DIR = DATA_ROOT / "images"
-MASKS_DIR = DATA_ROOT / "masks"
+MASKS_DIR = DATA_ROOT / args.masks_dir
 
 OUTPUT_DIR = REPO_ROOT / "results" / args.output_dir
 GENERATED_MASKS_DIR = OUTPUT_DIR / "generated_masks"
