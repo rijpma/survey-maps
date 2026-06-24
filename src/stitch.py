@@ -1,12 +1,15 @@
 import os
 import re
+
 from PIL import Image
 
 # Increase the max image pixels to allow for very large stitched maps
 Image.MAX_IMAGE_PIXELS = None
 
-IN_DIR = "india_tiles"
+IN_DIR = "india_tiles-vm"
+OUT_NAME = "vm"
 TILE_SIZE = 256
+
 
 def stitch_tiles(zoom):
     zoom_dir = os.path.join(IN_DIR, str(zoom))
@@ -16,8 +19,8 @@ def stitch_tiles(zoom):
 
     # Find all tiles and determine coordinate boundaries
     tiles = []
-    x_min, x_max = float('inf'), float('-inf')
-    y_min, y_max = float('inf'), float('-inf')
+    x_min, x_max = float("inf"), float("-inf")
+    y_min, y_max = float("inf"), float("-inf")
 
     for x_str in os.listdir(zoom_dir):
         if not x_str.isdigit():
@@ -29,7 +32,7 @@ def stitch_tiles(zoom):
             continue
 
         for filename in os.listdir(x_path):
-            if not filename.endswith('.png'):
+            if not filename.endswith(".png"):
                 continue
 
             # Extract y from filename (format: {y}_lat_..._lon_....png)
@@ -38,7 +41,7 @@ def stitch_tiles(zoom):
                 y = int(match.group(1))
             else:
                 # Fallback just in case
-                y_str = filename.split('.')[0]
+                y_str = filename.split(".")[0]
                 if not y_str.isdigit():
                     continue
                 y = int(y_str)
@@ -65,7 +68,7 @@ def stitch_tiles(zoom):
     print(f"Output image size: {width}x{height} pixels")
 
     # Create a blank transparent image canvas
-    stitched = Image.new('RGBA', (width, height))
+    stitched = Image.new("RGBA", (width, height))
 
     # Paste each tile into its correct position
     for x, y, path in tiles:
@@ -79,7 +82,7 @@ def stitch_tiles(zoom):
             print(f"Error processing {path}: {e}")
 
     # Save output
-    out_filename = f"stitched_india_z{zoom}.png"
+    out_filename = f"stitched_india_z{zoom}_{OUT_NAME}.png"
     print(f"Saving to {out_filename}...")
     stitched.save(out_filename, "PNG")
     print(f"Successfully created {out_filename}\n")
